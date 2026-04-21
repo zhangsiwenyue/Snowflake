@@ -1,0 +1,6 @@
+streamlit==1.56.0
+anthropic==0.96.0
+snowflake-connector-python==4.4.0
+sqlglot==30.6.0
+python-dotenv==1.2.2
+pytest==9.0.3
