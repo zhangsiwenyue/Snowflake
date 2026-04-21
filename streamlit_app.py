@@ -30,30 +30,6 @@ def get_agent() -> CensusAgent:
     return CensusAgent(settings)
 
 
-def render_history(messages: list[dict[str, Any]]) -> None:
-    """Render only the user-visible turns. Tool_use / tool_result blocks
-    that live inside `messages` are shown in the trace expander, not the
-    main chat stream."""
-    for m in messages:
-        role = m["role"]
-        content = m["content"]
-        if isinstance(content, str):
-            with st.chat_message(role):
-                st.markdown(content)
-        elif isinstance(content, list):
-            # Anthropic-style content blocks. Show only text blocks here.
-            text_parts = [
-                getattr(b, "text", b.get("text", "")) if not isinstance(b, str) else b
-                for b in content
-                if (isinstance(b, str)
-                    or getattr(b, "type", b.get("type") if isinstance(b, dict) else None) == "text")
-            ]
-            text = "\n\n".join(t for t in text_parts if t)
-            if text and role == "assistant":
-                with st.chat_message("assistant"):
-                    st.markdown(text)
-
-
 def render_trace(trace_events: list[dict[str, Any]]) -> None:
     if not trace_events:
         return
@@ -77,6 +53,24 @@ def render_trace(trace_events: list[dict[str, Any]]) -> None:
             st.warning("hit max iterations")
 
 
+# --- Session state ---
+# `agent_history` is the raw Anthropic-format list threaded through `agent.respond`.
+# `display_messages` is a parallel list of {role, text, meta} for rendering only —
+# it holds just the user's question and the assistant's final answer per turn,
+# never the intermediate tool_use/tool_result blocks. Keeping these separate
+# means every rerun re-renders a clean transcript, while the agent still sees
+# the full tool-use history it needs for context.
+
+if "agent_history" not in st.session_state:
+    st.session_state.agent_history: list[dict[str, Any]] = []
+if "display_messages" not in st.session_state:
+    st.session_state.display_messages: list[dict[str, Any]] = []
+if "last_trace" not in st.session_state:
+    st.session_state.last_trace = None
+if "pending_input" not in st.session_state:
+    st.session_state.pending_input = None
+
+
 # ---------------------------- Sidebar ----------------------------
 
 with st.sidebar:
@@ -96,14 +90,16 @@ with st.sidebar:
     ]
     for s in suggestions:
         if st.button(s, key=f"sug_{hash(s)}", use_container_width=True):
-            st.session_state["pending_input"] = s
+            st.session_state.pending_input = s
             st.rerun()
 
     st.markdown("---")
     show_trace = st.checkbox("Show agent trace", value=False)
     if st.button("Clear conversation", use_container_width=True):
-        st.session_state.history = []
+        st.session_state.agent_history = []
+        st.session_state.display_messages = []
         st.session_state.last_trace = None
+        st.session_state.pending_input = None
         st.rerun()
 
 # ---------------------------- Main ----------------------------
@@ -111,13 +107,9 @@ with st.sidebar:
 st.title("US Census Chat Agent")
 st.caption(
     "Ask natural-language questions about US population, demographics, income, "
-    "housing, education, and more. Answers are computed live against Snowflake."
+    "housing, education, and more. Answers are computed live against Snowflake. "
+    "I remember the conversation — ask follow-ups like *“what about Texas?”* without repeating yourself."
 )
-
-if "history" not in st.session_state:
-    st.session_state.history: list[dict[str, Any]] = []
-if "last_trace" not in st.session_state:
-    st.session_state.last_trace = None
 
 try:
     agent = get_agent()
@@ -129,14 +121,23 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-# Render existing history.
-render_history(st.session_state.history)
+# Render the existing transcript from display_messages (clean, no tool noise).
+for msg in st.session_state.display_messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["text"])
+        meta = msg.get("meta")
+        if meta:
+            st.caption(meta)
 
-# Handle suggestion clicks.
-pending = st.session_state.pop("pending_input", None)
-user_input = pending or st.chat_input("Ask a question about US Census data…")
+# Always render chat_input so it stays visible on suggestion-click reruns.
+typed = st.chat_input("Ask a question about US Census data…")
+pending = st.session_state.pending_input
+st.session_state.pending_input = None
+user_input = typed or pending
 
 if user_input:
+    # Echo the user turn immediately.
+    st.session_state.display_messages.append({"role": "user", "text": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
@@ -145,20 +146,31 @@ if user_input:
         placeholder.markdown("_Thinking…_")
         start = time.time()
         try:
-            response = agent.respond(st.session_state.history, user_input)
+            response = agent.respond(st.session_state.agent_history, user_input)
         except Exception as e:
             placeholder.error(
                 "Something went wrong while answering your question. Please try again."
             )
             st.exception(e)
+            # Roll back the user turn so they can retry cleanly.
+            st.session_state.display_messages.pop()
             st.stop()
         elapsed = time.time() - start
         placeholder.markdown(response.text)
-        st.caption(
-            f"⏱️ {elapsed:.1f}s · {len([e for e in response.trace.events if e['kind']=='tool_call'])} tool calls"
+        meta = (
+            f"⏱️ {elapsed:.1f}s · "
+            f"{sum(1 for e in response.trace.events if e['kind']=='tool_call')} tool calls"
             + (" · 🛡️ refused" if response.refused else "")
         )
+        st.caption(meta)
+        st.session_state.display_messages.append(
+            {"role": "assistant", "text": response.text, "meta": meta}
+        )
         st.session_state.last_trace = response.trace.events
+
+    # Rerun so the chat_input box clears and the new turn is rendered via the
+    # normal display_messages loop (keeps the DOM consistent across turns).
+    st.rerun()
 
 if show_trace and st.session_state.last_trace:
     with st.expander("🔍 Last-turn agent trace", expanded=True):

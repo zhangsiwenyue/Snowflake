@@ -16,6 +16,11 @@ from snowflake.connector.errors import DatabaseError, ProgrammingError
 
 from .config import Settings
 
+# Use ? placeholders (qmark) instead of %s (pyformat). pyformat tries to
+# str.format() the whole query *before* binding, which breaks any legitimate
+# '%' character in a literal or ILIKE pattern (e.g. '%california%').
+snowflake.connector.paramstyle = "qmark"
+
 logger = logging.getLogger(__name__)
 
 

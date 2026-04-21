@@ -67,9 +67,9 @@ class FieldHit:
 
 
 def _join_levels(row: dict) -> str:
-    parts = [
-        row.get(f"FIELD_LEVEL_{i}") for i in range(1, 11)
-    ]
+    # The underlying column 9 is mis-cased as "FIELD_LEVELl_9" in the share;
+    # we alias it to FIELD_LEVEL_9 in our SELECT so the Python side is uniform.
+    parts = [row.get(f"FIELD_LEVEL_{i}") for i in range(1, 11)]
     return " > ".join(p for p in parts if p)
 
 
@@ -96,17 +96,17 @@ class CensusCatalog:
             "COALESCE(FIELD_LEVEL_2,'')||' '||COALESCE(FIELD_LEVEL_3,'')||' '||"
             "COALESCE(FIELD_LEVEL_4,'')||' '||COALESCE(FIELD_LEVEL_5,'')||' '||"
             "COALESCE(FIELD_LEVEL_6,'')||' '||COALESCE(FIELD_LEVEL_7,'')||' '||"
-            "COALESCE(FIELD_LEVEL_8,'')||' '||COALESCE(FIELD_LEVELl_9,'')||' '||"
+            'COALESCE(FIELD_LEVEL_8,\'\')||\' \'||COALESCE("FIELD_LEVELl_9",\'\')||\' \'||'
             "COALESCE(FIELD_LEVEL_10,'')"
         )
-        where = " AND ".join([f"{searchable} ILIKE %s" for _ in tokens])
+        where = " AND ".join([f"{searchable} ILIKE ?" for _ in tokens])
         params = [f"%{t}%" for t in tokens]
         # Prefer estimate columns over margin-of-error columns by default.
         sql = f"""
             SELECT TABLE_ID, TABLE_NUMBER, TABLE_TITLE, TABLE_TOPICS, TABLE_UNIVERSE,
                    FIELD_LEVEL_1, FIELD_LEVEL_2, FIELD_LEVEL_3, FIELD_LEVEL_4,
                    FIELD_LEVEL_5, FIELD_LEVEL_6, FIELD_LEVEL_7, FIELD_LEVEL_8,
-                   FIELD_LEVELl_9, FIELD_LEVEL_10
+                   "FIELD_LEVELl_9" AS FIELD_LEVEL_9, FIELD_LEVEL_10
               FROM "{year}_METADATA_CBG_FIELD_DESCRIPTIONS"
              WHERE {where}
                AND TABLE_ID NOT ILIKE '%m_'
